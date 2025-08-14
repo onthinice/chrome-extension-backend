@@ -1,14 +1,24 @@
 const http = require('http');
 const WebSocket = require('ws');
+const url = require('url');
 
 const PORT = process.env.PORT || 3000;
-const server = http.createServer(); // Required by Render
+const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
 const rooms = {};
 
+// --- THIS IS THE NEW, CRITICAL PART ---
+// This handles Render's health checks.
+// When Render pings our server, we'll respond with a simple "OK".
+server.on('request', (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Server is alive and listening for WebSockets.');
+});
+// --- END OF NEW PART ---
+
 wss.on('connection', (socket, req) => {
-    const urlParams = new URLSearchParams(req.url.replace('/?', ''));
+    const urlParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
     const roomId = urlParams.get('room');
     if (!roomId) return socket.close();
 
@@ -21,7 +31,10 @@ wss.on('connection', (socket, req) => {
             const data = JSON.parse(message);
             if (data.type === 'join') {
                 sessionId = data.id;
-                rooms[roomId].push({ id: sessionId, socket });
+                // Prevent duplicate sessions
+                if (!rooms[roomId].find(s => s.id === sessionId)) {
+                    rooms[roomId].push({ id: sessionId, socket });
+                }
                 broadcast(roomId);
             }
             if (data.type === 'leave') {
@@ -47,16 +60,18 @@ function broadcast(roomId) {
         type: 'update',
         sessions: sessions.map(s => s.id)
     };
+    const payloadString = JSON.stringify(payload);
 
     sessions.forEach(s => {
         if (s.socket.readyState === WebSocket.OPEN) {
-            s.socket.send(JSON.stringify(payload));
+            s.socket.send(payloadString);
         }
     });
 }
 
 function removeSession(roomId, id) {
-    rooms[roomId] = (rooms[roomId] || []).filter(s => s.id !== id);
+    if (!rooms[roomId]) return;
+    rooms[roomId] = rooms[roomId].filter(s => s.id !== id);
 }
 
 server.listen(PORT, () => {
